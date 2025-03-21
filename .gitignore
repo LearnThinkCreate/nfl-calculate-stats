@@ -1,0 +1,7 @@
+data/
+archive/
+__pycache__/
+.cursorignore
+*.csv
+.env
+.cursor/
