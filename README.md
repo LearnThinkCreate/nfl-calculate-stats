@@ -149,18 +149,6 @@ The `clean_dims.py` module provides access to various dimensional data:
 
 These functions provide crucial context for the statistical calculations.
 
-## Getting Started
-
-To use this repository:
-
-1. Clone the repository
-2. Install dependencies (pandas, numpy, nfl_data_py, psycopg2, sqlalchemy)
-3. Ensure R is installed if you need play statistics data
-4. Create a `data` directory in the repository root
-5. Call `calculate_stats()` with your desired parameters
-
-The first run will download and cache the necessary data. Subsequent runs will use the cached data for improved performance.
-
 ## Conclusion
 
 This NFL statistics processing pipeline provides a powerful, flexible framework for analyzing football data. By combining efficient data loading, sophisticated processing, and comprehensive statistical calculations, it enables deep insights into NFL player and team performance.
