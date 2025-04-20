@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from functools import reduce
-
+from utils_data import load_playstats
 
 def process_stats(
     playstats,
@@ -17,89 +17,34 @@ def process_stats(
     """
     Process football play statistics to calculate various metrics - optimized version.
 
-    This function is the central aggregation point for all NFL statistics. It takes
-    pre-processed play stats and various specialized statistics (passing, rushing, 
-    receiving, etc.) and combines them into a comprehensive statistics DataFrame.
-    It handles the proper aggregation of all metrics based on the specified grouping
-    variables and statistic types.
-
-    Parameters
-    ----------
+    Parameters:
+    -----------
     playstats : pandas.DataFrame
-        DataFrame containing play-by-play statistics with enriched flag columns
-        for various play types and outcomes. This should be the output from the
-        process_playstats function.
-    
+        DataFrame containing play-by-play statistics
     grp_vars : list
-        List of column names to group by when aggregating statistics.
-        Common values include ['season', 'player_id'] or 
-        ['season', 'week', 'game_id', 'player_id'] depending on summary_level.
-    
+        List of column names to group by
     stat_type : str
-        Type of statistics to calculate:
-        - 'player': Individual player statistics
-        - 'team': Team-level aggregate statistics
-    
+        Type of statistics ('player' or 'team')
     summary_level : str
-        Level at which to summarize statistics:
-        - 'season': Aggregate stats for the entire season
-        - 'week': Break down stats by week/game
-    
+        Level of summary ('week' or 'season')
     passing_stats_from_pbp : pandas.DataFrame
-        DataFrame with passing stats derived from play-by-play data.
-        Should include columns for passing EPA, CPOE, and success rate.
-    
+        DataFrame with passing stats from play-by-play data
     rushing_stats_from_pbp : pandas.DataFrame
-        DataFrame with rushing stats derived from play-by-play data.
-        Should include columns for rushing EPA.
-    
+        DataFrame with rushing stats from play-by-play data
     receiving_stats_from_pbp : pandas.DataFrame
-        DataFrame with receiving stats derived from play-by-play data.
-        Should include columns for receiving EPA.
-    
+        DataFrame with receiving stats from play-by-play data
     dropback_stats_from_pbp : pandas.DataFrame
-        DataFrame with quarterback dropback stats derived from play-by-play data.
-        Should include columns for dropback EPA and success rate.
-    
+        DataFrame with dropback stats from play-by-play data
     scramble_stats_from_pbp : pandas.DataFrame
-        DataFrame with quarterback scramble stats derived from play-by-play data.
-        Should include columns for scramble EPA and success rate.
-
-    Returns
-    -------
+        DataFrame with scramble stats from play-by-play data
+    Returns:
+    --------
     pandas.DataFrame
-        A comprehensive DataFrame containing all calculated football statistics
-        aggregated according to the specified grouping variables. The DataFrame
-        includes statistics like completions, attempts, passing yards, rushing yards,
-        touchdowns, EPA metrics, and derived statistics like completion percentage
-        and yards per attempt.
-    
-    Notes
-    -----
-    This function performs complex aggregations on the input DataFrames, using
-    custom aggregation functions when necessary (e.g., for mode calculations).
-    It handles both player and team level statistics, and can produce either
-    season-level or weekly summaries.
+        DataFrame with calculated statistics
     """
-
     # Helper function for mode calculation
     def custom_mode(series, na_rm=True):
-        """
-        Get the most common value in a series.
-        
-        Parameters
-        ----------
-        series : pandas.Series
-            The series to find the mode of
-        
-        na_rm : bool, default=True
-            Whether to remove NA values before computing the mode
-            
-        Returns
-        -------
-        object or None
-            The most common value in the series, or None if the series is empty
-        """
+        """Get the most common value in a series"""
         if na_rm:
             series = series.dropna()
         return (
@@ -123,7 +68,7 @@ def process_stats(
     if stat_type == "player" and summary_level == "week":
         aggs["team"] = pd.NamedAgg(column="team", aggfunc="last")
 
-    if stat_type == "player" and summary_level == "season":
+    if stat_type == 'player' and summary_level == 'season':
         aggs["team"] = pd.NamedAgg(column="team", aggfunc="first")
 
     # Number of games - only for season summaries
@@ -178,6 +123,7 @@ def process_stats(
         }
     )
 
+
     aggs.update(
         {
             "passing_yards": pd.NamedAgg(column="pass_yards", aggfunc="sum"),
@@ -194,9 +140,7 @@ def process_stats(
 
     # Handle air yards separately for player vs team
     if stat_type == "player":
-        playstats["recv_air_yards"] = np.where(
-            playstats["is_target"], playstats["team_play_air_yards"], 0
-        )
+        playstats["recv_air_yards"] = np.where(playstats["is_target"], playstats["team_play_air_yards"], 0)
         aggs["receiving_air_yards"] = pd.NamedAgg(
             column="recv_air_yards", aggfunc="sum"
         )
@@ -205,9 +149,7 @@ def process_stats(
 
     # Store first values of team metrics for later calculations
     if stat_type == "player":
-        aggs["team_targets_first"] = pd.NamedAgg(
-            column="team_game_targets", aggfunc="first"
-        )
+        aggs["team_targets_first"] = pd.NamedAgg(column="team_game_targets", aggfunc="first")
         aggs["team_air_yards_first"] = pd.NamedAgg(
             column="team_game_air_yards", aggfunc="first"
         )

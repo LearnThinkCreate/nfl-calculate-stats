@@ -1,4 +1,5 @@
 import pandas as pd
+from clean_dims import get_team_abbr
 
 
 def filter_pbp_columns(pbp_df: pd.DataFrame) -> pd.DataFrame:
@@ -116,19 +117,6 @@ def normalize_team_abbreviations(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         pd.DataFrame: DataFrame with normalized team abbreviations
     """
-    # Map of old abbreviations to current ones
-    team_abbr_map = {
-        "STL": "LA",
-        "SD": "LAC",
-        "OAK": "LV",
-        "JAC": "JAX",
-        "SL": "LA",
-        "ARZ": "ARI",
-        "BLT": "BAL",
-        "CLV": "CLE",
-        "HST": "HOU",
-    }
-
     # List of columns that contain team abbreviations
     team_columns = ["home_team", "away_team", "posteam", "defteam"]
 
@@ -138,7 +126,7 @@ def normalize_team_abbreviations(df: pd.DataFrame) -> pd.DataFrame:
     # Normalize each team column
     for col in team_columns:
         if col in result.columns:
-            result[col] = result[col].map(lambda x: team_abbr_map.get(x, x))
+            result[col] = result[col].map(get_team_abbr)
 
     return result
 
@@ -393,6 +381,9 @@ def validate_data(df: pd.DataFrame) -> pd.DataFrame:
         result = result[
             (result["play_type"].isna()) | (result["play_type"].isin(valid_play_types))
         ]
+        
+    # Remove rows where posteam is empty string
+    result = result[result["posteam"] != ""]
 
     return result
 
@@ -417,5 +408,8 @@ def clean_pbp_data(pbp_df: pd.DataFrame) -> pd.DataFrame:
         .pipe(convert_data_types)
         .pipe(validate_data)
     )
+    
+    # Remove duplicate plays
+    cleaned_df = cleaned_df.drop_duplicates(subset=['season', 'play_id', 'game_id'], keep='last')
 
     return cleaned_df

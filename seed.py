@@ -1,7 +1,8 @@
 import pandas as pd
+import numpy as np # Import numpy for np.nan check if needed
 import psycopg2
 from psycopg2.extras import execute_batch
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine # Keep for teams insert for now
 import time
 from utils_data import load_pbp
 from clean_pbp import clean_pbp_data
@@ -12,351 +13,288 @@ import os
 
 load_dotenv()
 
-
-def seed_database(
-    db_name="nfl_stats", user="xxxx", password="xxxx", host="localhost", port="5432"
-):
+# --- Main Seeding Function ---
+def seed_database(db_name="nfl_stats", user="xxxx", password="xxxx", host="localhost", port="5432"):
     """
-    Seed the NFL stats database with teams, players, games, plays, and playstats data.
-    
-    This function serves as the main entry point for populating a PostgreSQL database
-    with NFL statistics data. It orchestrates the entire ETL (Extract, Transform, Load)
-    process by:
-    
-    1. Establishing connections to the database using both SQLAlchemy and psycopg2
-    2. Extracting data from various sources using utility functions:
-       - Team information (get_teams)
-       - Player information (get_players)
-       - Game schedules (get_games)
-       - Player snap counts (get_snap_counts)
-       - Play-by-play data (load_pbp, clean_pbp_data)
-       - Play statistics (process_playstats)
-    3. Transforming the data as needed (cleaning, filtering, etc.)
-    4. Loading the data into the appropriate database tables using a mix of:
-       - SQLAlchemy's to_sql for smaller tables
-       - Psycopg2's execute_batch for larger tables and better performance
-    
-    The function implements proper transaction handling with commit/rollback
-    to ensure database integrity.
-    
-    Parameters
-    ----------
-    db_name : str, default='nfl_stats'
-        Name of the PostgreSQL database to connect to
-        
-    user : str, default='xxxx'
-        Database username for authentication
-        
-    password : str, default='xxxx'
-        Database password for authentication
-        
-    host : str, default='localhost'
-        Database server hostname or IP address
-        
-    port : str, default='5432'
-        Database server port number
-        
-    Returns
-    -------
-    None
-        The function operates via side effects (populating database tables)
-        
-    Notes
-    -----
-    - This function uses both SQLAlchemy and psycopg2 connections:
-      - SQLAlchemy for simpler to_sql operations on smaller tables
-      - Psycopg2 with execute_batch for better performance on larger tables
-    - The database schema should already exist before calling this function
-    - Error handling is implemented to roll back transactions on failure
-    - Real passwords should be stored in environment variables (.env file)
-      rather than hardcoded in the function parameters
+    Seed the NFL stats database with teams, players, games, plays, playstats, and snap counts.
     """
-    # Create database connection
     conn_string = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-    engine = create_engine(conn_string)
-    conn = psycopg2.connect(
-        dbname=db_name, user=user, password=password, host=host, port=port
-    )
-    conn.autocommit = False
-
+    engine = create_engine(conn_string) # Keep engine for initial teams insert if preferred
+    conn = None # Initialize conn to None
+    
     try:
+        conn = psycopg2.connect(
+            dbname=db_name,
+            user=user,
+            password=password,
+            host=host,
+            port=port
+        )
+        conn.autocommit = False # Ensure transaction control
+        cursor = conn.cursor()
+
         print("Fetching data...")
-        teams = get_teams()
-        players = get_players()
-        games = get_games([2024])  # Only current season
-        snap_counts = get_snap_counts(2024)  # Get snap counts for current season
-
-        print("Loading play-by-play data...")
-        pbp_data = clean_pbp_data(load_pbp([2024]))  # Only current season
-
+        seasons = range(1999, 2025)
+        
+        
+        teams_df = get_teams()
+        players_df = get_players()
+        games_df = get_games(seasons)
+        snap_counts_df = get_snap_counts(seasons)
+        
+        print("Loading and cleaning play-by-play data...")
+        pbp_df = clean_pbp_data(load_pbp(seasons))
+        
         print("Processing playstats...")
-        playstats = process_playstats(pbp_data, [2024], "week")
-        playstats["special"] = playstats["special"].fillna(0)
+        playstats_df = process_playstats(pbp_df, seasons, "week")
+        # Ensure 'special' column exists and fillna (as requested)
+        if 'special' in playstats_df.columns:
+            playstats_df['special'] = playstats_df['special'].fillna(0)
+        else:
+             print("Warning: 'special' column not found in playstats_df after processing.")
+             # Handle as needed, maybe add it: playstats_df['special'] = 0
+
+        print("Data fetching and initial processing complete.")
 
         # Start transaction
         print("Beginning database import...")
 
-        # Insert teams (small table, use to_sql)
         print("Importing teams...")
-        teams.to_sql("teams", engine, if_exists="append", index=False)
-
-        # Insert players (larger table, use batch insert)
-        print("Importing players...")
-        cursor = conn.cursor()
-
-        # Prepare data for batch insert
-        player_values = []
-        for _, row in players.iterrows():
-            player_values.append(
-                (
-                    row.get("gsis_id", None),
-                    row.get("status", None),
-                    row.get("display_name", None),
-                    row.get("first_name", None),
-                    row.get("last_name", None),
-                    row.get("esb_id", None),
-                    row.get("birth_date", None),
-                    row.get("college_name", None),
-                    row.get("position", None),
-                    (
-                        None
-                        if pd.isna(row.get("jersey_number"))
-                        else int(row.get("jersey_number"))
-                    ),
-                    None if pd.isna(row.get("height")) else int(row.get("height")),
-                    None if pd.isna(row.get("weight")) else int(row.get("weight")),
-                    row.get("team_abbr", None),
-                    row.get("current_team_id", None),
-                    (
-                        None
-                        if pd.isna(row.get("entry_year"))
-                        else int(row.get("entry_year"))
-                    ),
-                    (
-                        None
-                        if pd.isna(row.get("rookie_year"))
-                        else int(row.get("rookie_year"))
-                    ),
-                    row.get("draft_club", None),
-                    row.get("college_conference", None),
-                    row.get("status_short_description", None),
-                    (
-                        None
-                        if pd.isna(row.get("gsis_it_id"))
-                        else int(row.get("gsis_it_id"))
-                    ),
-                    row.get("short_name", None),
-                    row.get("headshot", None),
-                    (
-                        None
-                        if pd.isna(row.get("draft_number"))
-                        else int(row.get("draft_number"))
-                    ),
-                    (
-                        None
-                        if pd.isna(row.get("draftround"))
-                        else int(row.get("draftround"))
-                    ),
-                )
-            )
-
-        print(f"Inserting {len(player_values)} players...")
-        player_insert_query = """
-        INSERT INTO players 
-        (gsis_id, status, display_name, first_name, last_name, esb_id, birth_date, 
-         college_name, position, jersey_number, height, weight, team_abbr, 
-         current_team_id, entry_year, rookie_year, draft_club, college_conference, 
-         status_short_description, gsis_it_id, short_name, headshot, draft_number, draftround)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (gsis_id) DO UPDATE SET 
-        status = EXCLUDED.status,
-        team_abbr = EXCLUDED.team_abbr,
-        updated_at = NOW()
-        """
-        execute_batch(cursor, player_insert_query, player_values, page_size=1000)
-
-        # Insert games
-        print("Importing games...")
-        games_values = []
-        for _, row in games.iterrows():
-            games_values.append(
-                (
-                    row.get("game_id", None),
-                    row.get("season", None),
-                    row.get("game_type", None),
-                    row.get("week", None),
-                    row.get("gameday", None),
-                    row.get("weekday", None),
-                    row.get("gametime", None),
-                    row.get("away_team", None),
-                    row.get("away_score", None),
-                    row.get("home_team", None),
-                    row.get("home_score", None),
-                    row.get("location", None),
-                    row.get("result", None),
-                    row.get("total", None),
-                    row.get("overtime", None),
-                    row.get("gsis", None),
-                    row.get("nfl_detail_id", None),
-                    row.get("pfr", None),
-                    None if pd.isna(row.get("pff")) else int(row.get("pff")),
-                    row.get("espn", None),
-                    None if pd.isna(row.get("ftn")) else int(row.get("ftn")),
-                    row.get("away_rest", None),
-                    row.get("home_rest", None),
-                    row.get("away_moneyline", None),
-                    row.get("home_moneyline", None),
-                    row.get("spread_line", None),
-                    row.get("away_spread_odds", None),
-                    row.get("home_spread_odds", None),
-                    row.get("total_line", None),
-                    row.get("under_odds", None),
-                    row.get("over_odds", None),
-                    row.get("div_game", None),
-                    row.get("roof", None),
-                    row.get("surface", None),
-                    None if pd.isna(row.get("temp")) else int(row.get("temp")),
-                    None if pd.isna(row.get("wind")) else int(row.get("wind")),
-                    row.get("away_qb_id", None),
-                    row.get("home_qb_id", None),
-                    row.get("away_qb_name", None),
-                    row.get("home_qb_name", None),
-                    row.get("away_coach", None),
-                    row.get("home_coach", None),
-                    row.get("stadium_id", None),
-                    row.get("stadium", None),
-                )
-            )
-
-        games_insert_query = """
-        INSERT INTO games
-        (game_id, season, game_type, week, gameday, weekday, gametime, 
-         away_team, away_score, home_team, home_score, location, result, 
-         total, overtime, gsis, nfl_detail_id, pfr, pff, espn, ftn, 
-         away_rest, home_rest, away_moneyline, home_moneyline, spread_line, 
-         away_spread_odds, home_spread_odds, total_line, under_odds, over_odds, 
-         div_game, roof, surface, temp, wind, away_qb_id, home_qb_id, 
-         away_qb_name, home_qb_name, away_coach, home_coach, stadium_id, stadium)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (game_id) DO UPDATE SET
-        away_score = EXCLUDED.away_score,
-        home_score = EXCLUDED.home_score,
-        updated_at = NOW()
-        """
-        execute_batch(cursor, games_insert_query, games_values, page_size=100)
-
-        # Insert snap counts
-        print("Importing snap counts...")
-        snap_counts_values = []
-        for _, row in snap_counts.iterrows():
-            snap_counts_values.append(
-                (
-                    row.get("gsis_id", None),
-                    row.get("game_id", None),
-                    row.get("season", None),
-                    row.get("week", None),
-                    (
-                        None
-                        if pd.isna(row.get("offense_snaps"))
-                        else int(row.get("offense_snaps"))
-                    ),
-                    (
-                        None
-                        if pd.isna(row.get("offense_pct"))
-                        else float(row.get("offense_pct"))
-                    ),
-                )
-            )
-
-        snap_counts_insert_query = """
-        INSERT INTO snap_counts
-        (gsis_id, game_id, season, week, offense_snaps, offense_pct)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (gsis_id, game_id) DO UPDATE SET
-        offense_snaps = EXCLUDED.offense_snaps,
-        offense_pct = EXCLUDED.offense_pct,
-        updated_at = NOW()
-        """
-        print(f"Inserting {len(snap_counts_values)} snap count records...")
-        execute_batch(
-            cursor, snap_counts_insert_query, snap_counts_values, page_size=1000
+        teams_df.replace({pd.NA: None, np.nan: None}).to_sql(
+             'teams', 
+             engine, 
+             if_exists='append', # Consider 'replace' if you want a full refresh, or handle conflicts
+             index=False,
+             method=None # Let sqlalchemy handle it, often slower but simpler for small tables
         )
 
-        # Insert plays
-        print("Importing plays...")
-        plays_columns = list(pbp_data.columns)
-        placeholders = ", ".join(["%s"] * len(plays_columns))
-        plays_insert_query = f"""
-        INSERT INTO plays
-        ({", ".join(plays_columns)})
-        VALUES ({placeholders})
-        ON CONFLICT (season, play_id, game_id) DO UPDATE SET
-        updated_at = NOW()
-        """
+        player_insert_cols = [ # Match 03_players.sql
+            'gsis_id', 'status', 'display_name', 'first_name', 'last_name', 'esb_id', 'birth_date', 
+            'college_name', 'position', 'jersey_number', 'height', 'weight', 'team_abbr', 
+            'current_team_id', 'entry_year', 'rookie_year', 'draft_club', 'college_conference', 
+            'status_short_description', 'gsis_it_id', 'short_name', 'headshot', 'draft_number', 'draftround'
+        ]
+        game_insert_cols = [ # Match 04_games.sql
+            'game_id', 'season', 'game_type', 'week', 'gameday', 'weekday', 'gametime', 
+            'away_team', 'away_score', 'home_team', 'home_score', 'location', 'result', 
+            'total', 'overtime', 'gsis', 'nfl_detail_id', 'pfr', 'pff', 'espn', 'ftn', 
+            'away_rest', 'home_rest', 'away_moneyline', 'home_moneyline', 'spread_line', 
+            'away_spread_odds', 'home_spread_odds', 'total_line', 'under_odds', 'over_odds', 
+            'div_game', 'roof', 'surface', 'temp', 'wind', 'away_qb_id', 'home_qb_id', 
+            'away_qb_name', 'home_qb_name', 'away_coach', 'home_coach', 'stadium_id', 'stadium'
+        ]
+        snap_counts_insert_cols = [ # Match 07_snap_counts.sql
+            'gsis_id', 'game_id', 'season', 'week', 'offense_snaps', 'offense_pct'
+        ]
+        
+        # Assumes pbp_df and playstats_df columns match 05_pbp.sql and 06_playstats.sql exactly
+        # If not, define explicit lists for them too.
+        plays_insert_cols = None # Use all columns from pbp_df
+        playstats_insert_cols = None # Use all columns from playstats_df
 
-        # Process in batches to prevent memory issues
-        batch_size = 5000
-        total_plays = len(pbp_data)
-        for i in range(0, total_plays, batch_size):
-            batch = pbp_data.iloc[i : i + batch_size]
-            values = [tuple(row) for row in batch.values]
-            print(
-                f"Inserting plays batch {i//batch_size + 1}/{(total_plays//batch_size) + 1}..."
-            )
-            execute_batch(cursor, plays_insert_query, values, page_size=1000)
+        # --- Insert Players (Using Specific Columns) ---
+        player_pk = ['gsis_id']
+        player_update_cols = ['status', 'team_abbr'] 
+        execute_batch_insert(cursor, players_df, 'players', player_pk, 
+                             True, player_update_cols, 
+                             insert_columns=player_insert_cols)
 
-        # Insert playstats
-        print("Importing playstats...")
-        playstats_columns = list(playstats.columns)
-        placeholders = ", ".join(["%s"] * len(playstats_columns))
-        playstats_insert_query = f"""
-        INSERT INTO playstats
-        ({", ".join(playstats_columns)})
-        VALUES ({placeholders})
-        ON CONFLICT (season, play_id, game_id, player_id, stat_id) DO UPDATE SET
-        updated_at = NOW()
-        """
+        # --- Insert Games (Using Specific Columns) ---
+        game_pk = ['game_id']
+        game_update_cols = ['away_score', 'home_score'] 
+        execute_batch_insert(cursor, games_df, 'games', game_pk, 
+                             True, game_update_cols, 
+                             insert_columns=game_insert_cols)
 
-        # Process in batches
-        total_playstats = len(playstats)
-        for i in range(0, total_playstats, batch_size):
-            batch = playstats.iloc[i : i + batch_size]
-            values = [tuple(row) for row in batch.values]
-            print(
-                f"Inserting playstats batch {i//batch_size + 1}/{(total_playstats//batch_size) + 1}..."
-            )
-            execute_batch(cursor, playstats_insert_query, values, page_size=1000)
+        # --- Insert Snap Counts (Using Specific Columns) ---
+        snap_counts_pk = ['gsis_id', 'game_id']
+        snap_counts_update_cols = ['offense_snaps', 'offense_pct'] 
+        execute_batch_insert(cursor, snap_counts_df, 'snap_counts', snap_counts_pk, 
+                             True, snap_counts_update_cols, 
+                             insert_columns=snap_counts_insert_cols)
+
+        # --- Insert Plays (Assuming all df columns are needed) ---
+        plays_pk = ['season', 'play_id', 'game_id'] 
+        execute_batch_insert(cursor, pbp_df, 'plays', plays_pk, 
+                             False, update_cols=[], 
+                             insert_columns=plays_insert_cols,
+                             page_size=10_000) 
+
+        # --- Insert Playstats (Assuming all df columns are needed) ---
+        playstats_pk = ['season', 'play_id', 'game_id', 'player_id', 'stat_id'] 
+        execute_batch_insert(cursor, playstats_df, 'playstats', playstats_pk, 
+                             False, update_cols=[], 
+                             insert_columns=playstats_insert_cols,
+                             page_size=10_000) 
 
         # Refresh materialized views
         print("Refreshing materialized views...")
         cursor.execute("REFRESH MATERIALIZED VIEW player_game_stats")
-
-        # Commit transaction
+        
         conn.commit()
         print("Database seeding completed successfully!")
 
-    except Exception as e:
-        conn.rollback()
-        print(f"Error seeding database: {e}")
-        raise
+
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(f"Error seeding database: {error}")
+        if conn:
+            conn.rollback()
+            print("Transaction rolled back.")
+        raise # Re-raise the exception after rollback
+
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+            print("Database connection closed.")
+        if engine:
+             engine.dispose() # Dispose sqlalchemy engine if used
+
+
+def generate_on_conflict_update_sql(df_columns, pk_columns):
+    """Generates the SET clause for ON CONFLICT DO UPDATE."""
+    update_cols = [col for col in df_columns if col not in pk_columns]
+    if not update_cols:
+        return "updated_at = NOW()" # Default if only PKs
+
+    set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
+    set_clause += ", updated_at = NOW()"
+    return set_clause
+
+
+def execute_batch_insert(cursor, df, table_name, pk_columns, 
+                         conflict_action=False, update_cols=None, 
+                         insert_columns=None, # <-- Add optional parameter
+                         page_size=1000):
+    """
+    Performs batch insert using psycopg2.extras.execute_batch, handling NumPy types
+    and allowing specific column insertion.
+
+    Args:
+        cursor: Database cursor.
+        df: Pandas DataFrame to insert.
+        table_name: Name of the target database table.
+        pk_columns: List of primary key column names for conflict target.
+        conflict_action: false 'DO NOTHING', true 'DO UPDATE'.
+        update_cols: List of columns to update on conflict, or 'all' to update all non-PK columns.
+                     Only used if conflict_action is 'DO UPDATE'.
+        insert_columns: Optional list of column names from the DataFrame to insert. 
+                        If None, all columns from the DataFrame are used.
+        page_size: Number of rows per batch insert.
+    """
+    if df.empty:
+        print(f"Skipping insert for empty DataFrame into {table_name}.")
+        return
+
+    # Determine which columns to use for the INSERT statement
+    cols_to_insert = insert_columns if insert_columns else list(df.columns)
+    
+    # Check if specified insert_columns actually exist in the DataFrame
+    missing_cols = [col for col in cols_to_insert if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Columns specified in insert_columns not found in DataFrame for table {table_name}: {missing_cols}")
+
+    print(f"Preparing insert for {table_name} ({len(df)} rows)")
+
+    # Ensure consistent column quoting for safety
+    quoted_cols_to_insert = [f'"{col}"' for col in cols_to_insert]
+    cols_str = ", ".join(quoted_cols_to_insert)
+    placeholders = ", ".join(["%s"] * len(cols_to_insert))
+    
+    # PK columns must exist in the cols_to_insert list if they are needed for ON CONFLICT
+    missing_pk_in_insert = [pk for pk in pk_columns if pk not in cols_to_insert]
+    if missing_pk_in_insert:
+         raise ValueError(f"Primary key columns {missing_pk_in_insert} must be included in insert_columns for table {table_name} when using ON CONFLICT.")
+    
+    pk_cols_str = ", ".join([f'"{col}"' for col in pk_columns])
+
+    sql = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders})"
+
+    # --- ON CONFLICT Logic (using cols_to_insert for context if needed) ---
+    if conflict_action:
+        if update_cols == 'all':
+            # Generate update clause based on the columns being inserted, excluding PKs
+            set_clause = generate_on_conflict_update_sql(cols_to_insert, pk_columns)
+        elif isinstance(update_cols, list):
+             # Ensure update_cols are quoted and add updated_at
+             set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
+             set_clause += ", updated_at = NOW()"
+        else: # Default to updating only updated_at
+            set_clause = "updated_at = NOW()"
+            
+        sql += f" ON CONFLICT ({pk_cols_str}) DO UPDATE SET {set_clause}"   
+    else: 
+        pass # Simple insert
+
+    # Prepare data: Select only the required columns, replace NA/NaN, convert types
+    print(f"Selecting and converting data types for {table_name}...")
+    start_conv = time.time()
+
+    # Select only the necessary columns *before* iterating
+    df_subset = df[cols_to_insert]
+
+    data_tuples = []
+    for row_tuple in df_subset.replace({pd.NA: None, np.nan: None}).itertuples(index=False, name=None):
+        processed_row = []
+        for item in row_tuple:
+            if isinstance(item, np.integer):
+                processed_row.append(int(item))
+            elif isinstance(item, np.floating):
+                processed_row.append(float(item))
+            elif isinstance(item, np.bool_):
+                processed_row.append(bool(item))
+            # Handle pandas Timestamps explicitly if they cause issues
+            elif isinstance(item, pd.Timestamp):
+                 processed_row.append(item.to_pydatetime()) # Convert to python datetime
+            else:
+                processed_row.append(item)
+        data_tuples.append(tuple(processed_row))
+
+    conv_time = time.time() - start_conv
+    print(f"Data selection and conversion for {table_name} took {conv_time:.2f}s")
+
+    if not data_tuples:
+        print(f"No data tuples generated for {table_name}, skipping execute_batch.")
+        return
+
+    try:
+        print(f"Executing batch insert for {table_name}...")
+        start_conv = time.time()
+        execute_batch(cursor, sql, data_tuples, page_size=page_size)
+        conv_time = time.time() - start_conv
+        print(f"Successfully inserted/updated data for {table_name} in {conv_time:.2f}s.")
+    except Exception as e:
+        # Try to get a more informative error message with mogrify
+        error_msg = f"Error during batch insert for {table_name}: {e}"
+        try:
+            example_sql = cursor.mogrify(sql, data_tuples[0]).decode('utf-8', errors='ignore') # Decode bytes
+            error_msg += f"\nFailed SQL (sample): {example_sql}"
+        except Exception as me:
+             error_msg += f"\n(Could not generate sample SQL with mogrify: {me})"
+        
+        print(error_msg)
+        raise # Re-raise the original exception to trigger rollback
 
 
 if __name__ == "__main__":
-    # Example usage
     start_time = time.time()
-    load_dotenv()
-    print(os.getenv("DB_HOST"))
+    
+    db_host = os.getenv("DB_HOST")
+    db_name = os.getenv("DB_NAME")
+    db_user = os.getenv("DB_USER")
+    db_pass = os.getenv("DB_PASSWORD")
+    db_port = os.getenv("DB_PORT")
 
-    # Change these parameters to match your PostgreSQL configuration
-    seed_database(
-        db_name=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-    )
+    if not all([db_host, db_name, db_user, db_pass, db_port]):
+         print("Error: Database environment variables (DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT) are not fully set.")
+    else:
+        print(f"Attempting to connect to {db_name} on {db_host}:{db_port} as {db_user}")
+        seed_database(
+            db_name=db_name,
+            user=db_user,
+            password=db_pass,
+            host=db_host,
+            port=db_port
+        )
 
     elapsed_time = time.time() - start_time
     print(f"Total time elapsed: {elapsed_time:.2f} seconds")
